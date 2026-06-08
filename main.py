@@ -102,6 +102,8 @@ async def background_worker(queue: asyncio.Queue, bot: Bot):
             saved_items_summary = []
             
             # Process & Enrich extracted YouTube videos
+            videos_to_check = []
+            enriched_videos = []
             for video in extracted.youtube_videos:
                 enriched = await enrichment.enrich_youtube_video(video.title, video.direct_url, video.search_query)
                 video_id = enriched["video_id"]
@@ -112,9 +114,14 @@ async def background_worker(queue: asyncio.Queue, bot: Bot):
                     logger.info(f"Duplicate YouTube video found (hash: {content_hash}). Skipping.")
                     continue
                     
-                # Check duplicates (Semantic-based)
-                is_smart_dup = await gemini_client.check_smart_dedup(enriched["title"], recent_titles)
-                if is_smart_dup:
+                videos_to_check.append(enriched["title"])
+                enriched_videos.append((video, enriched, content_hash))
+                
+            # Run batch smart deduplication check (reduces API calls from N to 1)
+            duplicate_video_titles = await gemini_client.check_smart_dedup_batch(videos_to_check, recent_titles)
+            
+            for video, enriched, content_hash in enriched_videos:
+                if enriched["title"] in duplicate_video_titles:
                     logger.info(f"Smart duplicate YouTube video found: '{enriched['title']}'. Skipping.")
                     continue
                     
@@ -140,6 +147,8 @@ async def background_worker(queue: asyncio.Queue, bot: Bot):
                 recent_titles.append(enriched["title"]) # Avoid self-deduplication in the same batch
                 
             # Process & Enrich extracted books
+            books_to_check = []
+            enriched_books = []
             for book in extracted.books:
                 enriched = await enrichment.enrich_book(book.title, book.author, book.search_query)
                 content_hash = dedup.compute_book_hash(None, enriched["title"], enriched["author"])
@@ -149,9 +158,14 @@ async def background_worker(queue: asyncio.Queue, bot: Bot):
                     logger.info(f"Duplicate Book found (hash: {content_hash}). Skipping.")
                     continue
                     
-                # Check duplicates (Semantic-based)
-                is_smart_dup = await gemini_client.check_smart_dedup(enriched["title"], recent_titles)
-                if is_smart_dup:
+                books_to_check.append(enriched["title"])
+                enriched_books.append((book, enriched, content_hash))
+                
+            # Run batch smart deduplication check (reduces API calls from N to 1)
+            duplicate_book_titles = await gemini_client.check_smart_dedup_batch(books_to_check, recent_titles)
+            
+            for book, enriched, content_hash in enriched_books:
+                if enriched["title"] in duplicate_book_titles:
                     logger.info(f"Smart duplicate Book found: '{enriched['title']}'. Skipping.")
                     continue
                     
@@ -179,6 +193,9 @@ async def background_worker(queue: asyncio.Queue, bot: Bot):
                 
             # Process extracted general links
             for link in extracted.other_links:
+                if not link.url or not link.url.strip():
+                    logger.warning(f"Skipping link '{link.label}' because it has no URL.")
+                    continue
                 content_hash = dedup.compute_link_hash(link.url)
                 
                 # Check duplicates (Hash-based)
@@ -186,11 +203,12 @@ async def background_worker(queue: asyncio.Queue, bot: Bot):
                     logger.info(f"Duplicate Link found (hash: {content_hash}). Skipping.")
                     continue
                     
+                link_title = link.label or "Resource Link"
                 row = ShelfRow(
                     saved_at=datetime.utcnow().isoformat() + "Z",
                     source_type=source_type,
                     content_type="LINK",
-                    title=link.label,
+                    title=link_title,
                     creator="",
                     url=link.url,
                     thumbnail_url="",
@@ -204,7 +222,7 @@ async def background_worker(queue: asyncio.Queue, bot: Bot):
                     tags=" ".join(link.tags)
                 )
                 rows_to_save.append(row)
-                saved_items_summary.append({"title": link.label, "type": "LINK"})
+                saved_items_summary.append({"title": link_title, "type": "LINK"})
                 
             # Steps 5 & 6: Write to Google Sheets
             if not rows_to_save:

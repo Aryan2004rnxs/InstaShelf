@@ -48,18 +48,11 @@ def parse_vtt_to_text(vtt_content: str) -> str:
             
     return " ".join(deduped_lines)
 
-async def extract_reel_subtitles(url: str, shortcode: str, target_dir: Optional[str] = None) -> str:
+async def extract_reel_subtitles(url: str, shortcode: str) -> str:
     """
     Uses yt-dlp to extract auto-generated subtitles for the Reel without downloading the video.
     """
-    import sys
-    venv_ytdlp = os.path.join(sys.prefix, "bin", "yt-dlp")
-    ytdlp_executable = venv_ytdlp if os.path.exists(venv_ytdlp) else "yt-dlp"
-    
-    dir_to_use = target_dir if target_dir else os.path.abspath(f"instashelf_{shortcode}")
-    os.makedirs(dir_to_use, exist_ok=True)
-    
-    output_template = os.path.join(dir_to_use, f"subtitles_{shortcode}")
+    output_template = f"/tmp/instashelf_{shortcode}"
     # yt-dlp adds language and extension, e.g., /tmp/instashelf_{shortcode}.en.vtt
     expected_vtt_pattern = f"{output_template}.*.vtt"
     
@@ -71,7 +64,8 @@ async def extract_reel_subtitles(url: str, shortcode: str, target_dir: Optional[
             pass
             
     cmd = [
-        ytdlp_executable,
+        "yt-dlp",
+        "--no-interactive",
         "--write-auto-sub",
         "--sub-lang", "en",
         "--skip-download",
@@ -204,106 +198,13 @@ def _scrape_reel_metadata_sync(shortcode: str) -> str:
         logger.error(f"Instaloader failed for reel shortcode {shortcode}: {e}")
         raise RuntimeError(f"Instagram reel scraping failed: {err_str}")
 
-async def download_reel_video(url: str, shortcode: str, target_dir: str) -> Optional[str]:
-    """
-    Downloads the Reel video using yt-dlp.
-    Returns the path to the downloaded MP4 file, or None if download fails.
-    """
-    import sys
-    venv_ytdlp = os.path.join(sys.prefix, "bin", "yt-dlp")
-    ytdlp_executable = venv_ytdlp if os.path.exists(venv_ytdlp) else "yt-dlp"
-    
-    video_output = os.path.join(target_dir, "video.mp4")
-    cmd = [
-        ytdlp_executable,
-        "--format", "mp4/best",
-        "--output", video_output,
-        url
-    ]
-    
-    logger.info(f"Downloading Reel video using yt-dlp for shortcode: {shortcode}")
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60.0)
-        except asyncio.TimeoutError:
-            try:
-                process.kill()
-            except Exception:
-                pass
-            await process.communicate()
-            logger.warning(f"yt-dlp video download timed out for shortcode {shortcode}")
-            return None
-            
-        if process.returncode != 0:
-            err_msg = stderr.decode(errors="replace").strip()
-            logger.warning(f"yt-dlp video download failed for shortcode {shortcode}: {err_msg}")
-            return None
-            
-        if os.path.exists(video_output):
-            return video_output
-            
-        # Check if it was downloaded with a slightly different extension/format name
-        files = glob.glob(os.path.join(target_dir, "video.*"))
-        if files:
-            return files[0]
-            
-    except Exception as e:
-        logger.error(f"Error running yt-dlp video download for shortcode {shortcode}: {e}")
-        
-    return None
-
-def extract_video_keyframes(video_path: str, target_dir: str, interval_seconds: float = 2.0) -> List[str]:
-    """
-    Extracts keyframes from a video file using OpenCV.
-    Saves them as JPG files in target_dir.
-    """
-    import cv2
-    image_paths = []
-    
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        logger.warning(f"Could not open video file {video_path} for frame extraction.")
-        return []
-        
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 0:
-        fps = 30.0 # Default fallback
-        
-    frame_interval = int(fps * interval_seconds)
-    frame_count = 0
-    saved_count = 0
-    max_frames = 15 # Safety limit to avoid sending too many images
-    
-    while cap.isOpened() and saved_count < max_frames:
-        ret, frame = cap.read()
-        if not ret:
-            break
-            
-        if frame_count % frame_interval == 0:
-            out_path = os.path.join(target_dir, f"frame_{saved_count:03d}.jpg")
-            cv2.imwrite(out_path, frame)
-            image_paths.append(out_path)
-            saved_count += 1
-            
-        frame_count += 1
-        
-    cap.release()
-    logger.info(f"Extracted {len(image_paths)} keyframes from video {video_path}")
-    return image_paths
-
 async def scrape_instagram_content(url: str) -> Tuple[str, str, List[str], Optional[str]]:
     """
     Asynchronously extracts content from an Instagram URL.
     Returns: (source_type, caption, list_of_image_paths, temp_dir_to_clean)
     
     If source_type is REEL:
-      Downloads subtitles using yt-dlp, appends to caption.
-      Also downloads video and extracts keyframes for multimodal vision processing.
+      Downloads subtitles using yt-dlp, appends to caption, returns it.
     If source_type is POST:
       Downloads all images, returns list of paths and temp_dir for later cleanup.
     """
@@ -316,32 +217,15 @@ async def scrape_instagram_content(url: str) -> Tuple[str, str, List[str], Optio
     if post_type in ("reel", "tv"):
         # Fetch caption asynchronously
         caption = await asyncio.to_thread(_scrape_reel_metadata_sync, shortcode)
-        
-        # Set up a target directory to store downloaded video and frames
-        target_name = f"instashelf_{shortcode}"
-        target_dir = os.path.abspath(target_name)
-        if os.path.exists(target_dir):
-            shutil.rmtree(target_dir)
-        os.makedirs(target_dir, exist_ok=True)
-        
-        # Try to download video and extract keyframes
-        video_path = await download_reel_video(url, shortcode, target_dir)
-        image_paths = []
-        if video_path:
-            # Extract 1 frame every 2.0 seconds
-            image_paths = await asyncio.to_thread(
-                extract_video_keyframes, video_path, target_dir, 2.0
-            )
-            
-        # Fetch subtitles asynchronously (fallback/complementary text)
-        subtitles = await extract_reel_subtitles(url, shortcode, target_dir)
+        # Fetch subtitles asynchronously
+        subtitles = await extract_reel_subtitles(url, shortcode)
         
         raw_text = caption
         if subtitles:
             raw_text += "\n\n[SUBTITLES]\n" + subtitles
             
-        logger.info(f"Reel processed. Keyframes extracted: {len(image_paths)}, Raw text length: {len(raw_text)}")
-        return "REEL", raw_text, image_paths, target_dir
+        logger.info(f"Reel processed. Raw text length: {len(raw_text)}")
+        return "REEL", raw_text, [], None
     else:
         # For image posts (/p/)
         caption, image_paths, temp_dir = await asyncio.to_thread(_scrape_post_images_sync, shortcode)

@@ -19,8 +19,8 @@ class ExtractedBook(BaseModel):
     tags: List[str] = Field(default=[], description="1-3 relevant categorizing tags/hashtags, e.g. ['#books', '#finance', '#business']")
 
 class ExtractedLink(BaseModel):
-    url: str = Field(description="Full URL of the external link")
-    label: str = Field(description="Short description or label of what this link points to")
+    url: Optional[str] = Field(default=None, description="Full URL of the external link")
+    label: Optional[str] = Field(default=None, description="Short description or label of what this link points to")
     tags: List[str] = Field(default=[], description="1-3 relevant categorizing tags/hashtags, e.g. ['#resources', '#tools']")
 
 class GeminiExtractionResponse(BaseModel):

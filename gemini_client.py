@@ -2,7 +2,7 @@ import os
 import json
 import logging
 import asyncio
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 from PIL import Image
 import google.generativeai as genai
 from models import GeminiExtractionResponse
@@ -68,7 +68,7 @@ async def call_gemini_with_quota(model, contents: List[Any], generation_config: 
             lambda: model.generate_content(
                 contents,
                 generation_config=generation_config,
-                request_options=genai.types.RequestOptions(timeout=15.0)
+                request_options=genai.types.RequestOptions(timeout=90.0)
             )
         )
     else:
@@ -76,7 +76,7 @@ async def call_gemini_with_quota(model, contents: List[Any], generation_config: 
             None,
             lambda: model.generate_content(
                 contents,
-                request_options=genai.types.RequestOptions(timeout=15.0)
+                request_options=genai.types.RequestOptions(timeout=90.0)
             )
         )
         
@@ -256,9 +256,6 @@ async def check_smart_dedup(new_title: str, existing_titles: List[str]) -> bool:
     if not existing_titles:
         return False
         
-    # Rate limit safety delay for Gemini Free Tier (15 Requests Per Minute limit)
-    await asyncio.sleep(2.0)
-    
     prompt = f"""
 You are a deduplication assistant. 
 Compare the new content title: "{new_title}"
@@ -289,6 +286,55 @@ Respond ONLY with a valid JSON object matching this structure:
     except Exception as e:
         logger.error(f"Smart Dedup check failed: {e}")
         return False
+
+async def check_smart_dedup_batch(new_titles: List[str], existing_titles: List[str]) -> Set[str]:
+    """
+    Asks Gemini to compare a list of new titles against existing titles in one call.
+    Returns a set of new titles that are determined to be duplicates.
+    """
+    if not new_titles or not existing_titles:
+        return set()
+        
+    prompt = f"""
+You are a deduplication assistant. 
+We have a list of new content titles:
+{json.dumps(new_titles)}
+
+We want to check if any of these new titles refer to the exact same video, book, or link as any item in our list of existing titles:
+{json.dumps(existing_titles)}
+
+Determine which of the new titles are duplicates (allowing for minor differences in casing, punctuation, spelling, added words like "Watch:", or subtitles).
+
+Respond ONLY with a valid JSON object matching this structure:
+{{
+  "duplicates": [
+    {{
+      "new_title": "the new title that is a duplicate",
+      "existing_title_match": "the matching title from the existing list"
+    }}
+  ]
+}}
+"""
+    try:
+        model = genai.GenerativeModel(model_name=MODEL_NAME)
+        response_text = await call_gemini_with_quota(
+            model,
+            [prompt],
+            generation_config={"response_mime_type": "application/json"}
+        )
+        cleaned_json = clean_json_text(response_text)
+        data = json.loads(cleaned_json)
+        
+        duplicates = set()
+        for item in data.get("duplicates", []):
+            new_title = item.get("new_title")
+            if new_title:
+                duplicates.add(new_title)
+        return duplicates
+    except Exception as e:
+        logger.error(f"Batch Smart Dedup check failed: {e}")
+        return set()
+
 
 async def compose_reply_message(saved_items_summary: List[Dict[str, Any]], sheets_url: str) -> str:
     """
