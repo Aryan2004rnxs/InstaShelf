@@ -1,0 +1,26 @@
+# Virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# Environment secrets and credentials
+.env
+*.json
+!requirements.txt
+
+# Database and data folders
+data/
+*.db
+*.sqlite
+
+# Cache and temporary folders
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+instashelf_*/
+
+# System files
+.DS_Store
+Thumbs.db
