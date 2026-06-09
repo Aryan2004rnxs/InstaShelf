@@ -117,7 +117,16 @@ async def scrape_instagram_content(url: str) -> Tuple[str, str, List[str], Optio
         run = await client.actor("apify/instagram-scraper").call(run_input=run_input)
         
         # Fetch the results from the dataset
-        dataset_items = await client.dataset(run["defaultDatasetId"]).list_items()
+        # Handle apify-client v2.5.1 returning a Pydantic model instead of dict
+        dataset_id = getattr(run, "defaultDatasetId", getattr(run, "default_dataset_id", None))
+        if not dataset_id:
+            # Fallback for dicts just in case
+            dataset_id = run.get("defaultDatasetId") if isinstance(run, dict) else None
+        
+        if not dataset_id:
+            raise ValueError(f"Could not extract defaultDatasetId from run object: {run}")
+            
+        dataset_items = await client.dataset(dataset_id).list_items()
         items = dataset_items.items
         
         if not items:
