@@ -1,6 +1,9 @@
 FROM python:3.11-slim
 
-WORKDIR /app
+# Create a non-root user named "user" with UID 1000
+RUN useradd -m -u 1000 user
+
+WORKDIR /home/user/app
 
 # Install system dependencies needed for easyocr and yt-dlp/ffmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,18 +13,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install Python requirements
+# Copy requirements and install them globally as root (accessible by all users)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download easyOCR weights at build time (saves startup and execution time)
+# Set up environment variables for the user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH
+
+# Switch to the non-root user
+USER user
+
+# Pre-download easyOCR weights at build time into the user's home directory
 RUN python -c "import easyocr; easyocr.Reader(['en'], gpu=False)"
 
-# Copy application code
-COPY . .
+# Copy application files with user ownership
+COPY --chown=user . .
 
-# Create directory for SQLite cache/db files
-RUN mkdir -p /app/data && chmod 777 /app/data
+# Pre-create data directory for the SQLite cache/db files
+RUN mkdir -p data
 
 EXPOSE 7860
 
