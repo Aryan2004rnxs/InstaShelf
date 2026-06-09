@@ -28,21 +28,10 @@ def extract_shortcode(url: str) -> Optional[Tuple[str, str]]:
 
 def get_proxies_list() -> List[str]:
     """
-    Parses a comma-separated list of proxies from the SCRAPER_PROXY environment variable.
-    Automatically prepends 'http://' to proxies that don't specify a scheme.
+    Parse the SCRAPER_PROXY environment variable which could be a comma-separated list of proxies.
+    Returns an empty list by default to disable free proxies per user request, testing direct connection.
     """
-    proxy_env = os.getenv("SCRAPER_PROXY")
-    if not proxy_env:
-        return []
-    proxies = []
-    for p in proxy_env.split(","):
-        p = p.strip()
-        if not p:
-            continue
-        if not p.startswith("http://") and not p.startswith("https://") and not p.startswith("socks"):
-            p = "http://" + p
-        proxies.append(p)
-    return proxies
+    return []
 
 def parse_vtt_to_text(vtt_content: str) -> str:
     """
@@ -174,7 +163,7 @@ def _scrape_post_images_sync(shortcode: str) -> Tuple[str, List[str], str]:
         compress_json=False,
         post_metadata_txt_pattern="",  # Disable text file downloads
         max_connection_attempts=1,
-        request_timeout=45
+        request_timeout=10
     )
     
     # Ignore Hugging Face container environment proxies/settings
@@ -182,6 +171,8 @@ def _scrape_post_images_sync(shortcode: str) -> Tuple[str, List[str], str]:
     
     # Inject authenticated session cookies if provided (free bypass for rate blocks)
     session_id = os.getenv("INSTAGRAM_SESSION_ID")
+    logger.info(f"Cookie exists: {bool(session_id)}")
+    logger.info(f"Cookie length: {len(session_id) if session_id else 0}")
     if session_id:
         logger.info("Using Instagram authenticated session cookie for post scraping.")
         L.context._session.cookies.set("sessionid", session_id, domain=".instagram.com")
@@ -265,7 +256,7 @@ def _scrape_reel_metadata_sync(shortcode: str) -> str:
         save_metadata=False,
         compress_json=False,
         max_connection_attempts=1,
-        request_timeout=45
+        request_timeout=10
     )
     
     # Ignore Hugging Face container environment proxies/settings
@@ -273,6 +264,8 @@ def _scrape_reel_metadata_sync(shortcode: str) -> str:
     
     # Inject authenticated session cookies if provided (free bypass for rate blocks)
     session_id = os.getenv("INSTAGRAM_SESSION_ID")
+    logger.info(f"Cookie exists: {bool(session_id)}")
+    logger.info(f"Cookie length: {len(session_id) if session_id else 0}")
     if session_id:
         logger.info("Using Instagram authenticated session cookie for reel scraping.")
         L.context._session.cookies.set("sessionid", session_id, domain=".instagram.com")
