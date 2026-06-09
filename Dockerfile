@@ -4,6 +4,7 @@ FROM python:3.11-slim
 RUN useradd -m -u 1000 user
 
 WORKDIR /home/user/app
+RUN chown -R user:user /home/user/app
 
 # Install system dependencies needed for easyocr and yt-dlp/ffmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -11,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     build-essential \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install them globally as root (accessible by all users)
