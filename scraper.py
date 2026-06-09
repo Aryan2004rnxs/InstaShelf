@@ -185,9 +185,9 @@ def _scrape_post_images_sync(shortcode: str) -> Tuple[str, List[str], str]:
     if session_id:
         logger.info("Using Instagram authenticated session cookie for post scraping.")
         L.context._session.cookies.set("sessionid", session_id, domain=".instagram.com")
-        L.context._session.get("https://www.instagram.com/")
-        if "csrftoken" in L.context._session.cookies:
-            L.context._session.headers.update({"X-CSRFToken": L.context._session.cookies["csrftoken"]})
+        dummy_csrf = "1234567890abcdef1234567890abcdef"
+        L.context._session.cookies.set("csrftoken", dummy_csrf, domain=".instagram.com")
+        L.context._session.headers.update({"X-CSRFToken": dummy_csrf})
         L.context.username = os.getenv("INSTAGRAM_USERNAME", "your_instagram_username")
     
     target_name = f"instashelf_{shortcode}"
@@ -276,9 +276,9 @@ def _scrape_reel_metadata_sync(shortcode: str) -> str:
     if session_id:
         logger.info("Using Instagram authenticated session cookie for reel scraping.")
         L.context._session.cookies.set("sessionid", session_id, domain=".instagram.com")
-        L.context._session.get("https://www.instagram.com/")
-        if "csrftoken" in L.context._session.cookies:
-            L.context._session.headers.update({"X-CSRFToken": L.context._session.cookies["csrftoken"]})
+        dummy_csrf = "1234567890abcdef1234567890abcdef"
+        L.context._session.cookies.set("csrftoken", dummy_csrf, domain=".instagram.com")
+        L.context._session.headers.update({"X-CSRFToken": dummy_csrf})
         L.context.username = os.getenv("INSTAGRAM_USERNAME", "your_instagram_username")
     
     proxies_list = get_proxies_list()
