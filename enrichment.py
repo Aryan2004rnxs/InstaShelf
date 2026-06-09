@@ -1,5 +1,7 @@
 import logging
 import urllib.parse
+import urllib.request
+import os
 import httpx
 import asyncio
 import re
@@ -7,6 +9,29 @@ from typing import Optional, Dict, Any
 from youtubesearchpython import VideosSearch
 
 logger = logging.getLogger("InstaShelf.enrichment")
+
+_urllib_proxy_configured = False
+
+def setup_youtube_search_proxy():
+    global _urllib_proxy_configured
+    if _urllib_proxy_configured:
+        return
+    proxy_env = os.getenv("SCRAPER_PROXY")
+    if proxy_env:
+        # Get the first proxy from the list
+        proxies = [p.strip() for p in proxy_env.split(",") if p.strip()]
+        if proxies:
+            proxy = proxies[0]
+            if not proxy.startswith("http://") and not proxy.startswith("https://") and not proxy.startswith("socks"):
+                proxy = "http://" + proxy
+            try:
+                logger.info(f"Setting up global urllib proxy for YouTube search: {proxy}")
+                proxy_support = urllib.request.ProxyHandler({'http': proxy, 'https': proxy})
+                opener = urllib.request.build_opener(proxy_support)
+                urllib.request.install_opener(opener)
+                _urllib_proxy_configured = True
+            except Exception as e:
+                logger.error(f"Failed to configure urllib proxy: {e}")
 
 # Extract video ID from common YouTube URL formats
 def extract_youtube_video_id(url: str) -> Optional[str]:
@@ -28,6 +53,7 @@ def extract_youtube_video_id(url: str) -> Optional[str]:
 
 def _search_youtube_sync(query: str) -> Optional[Dict[str, Any]]:
     """Synchronous YouTube Search logic called inside a thread pool."""
+    setup_youtube_search_proxy()
     try:
         search = VideosSearch(query, limit=1)
         res = search.result()

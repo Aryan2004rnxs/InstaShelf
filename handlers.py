@@ -12,7 +12,7 @@ from telegram.ext import (
     ContextTypes
 )
 import sheets
-import gemini_client
+import ai_client
 from scraper import IG_REGEX
 
 logger = logging.getLogger("InstaShelf.handlers")
@@ -93,7 +93,7 @@ async def digest_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sheet_id = os.getenv("GOOGLE_SHEET_ID")
     sheets_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
     
-    digest_text = await gemini_client.get_weekly_digest(recent_items, sheets_url)
+    digest_text = await ai_client.get_weekly_digest(recent_items, sheets_url)
     await update.message.reply_text(digest_text)
 
 async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -128,7 +128,7 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "context": r.get("raw_context")
         })
         
-    search_results = await gemini_client.search_shelf(query, simplified_items)
+    search_results = await ai_client.search_shelf(query, simplified_items)
     await update.message.reply_text(search_results)
 
 async def instagram_link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):

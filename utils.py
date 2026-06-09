@@ -6,6 +6,11 @@ import json
 
 # Force native gRPC DNS resolution to fix macOS DNS lookup failures
 os.environ["GRPC_DNS_RESOLVER"] = "native"
+
+# Fix SSL CA Bundle paths overridden by Hugging Face Spaces (causes SSLError in containers)
+for var in ["CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"]:
+    if var in os.environ:
+        del os.environ[var]
 from datetime import datetime
 from functools import wraps
 from typing import Callable, Any, Type, Tuple, List
@@ -40,6 +45,14 @@ def init_db():
         # Table for tracking Gemini daily requests quota
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS gemini_quota (
+                date TEXT PRIMARY KEY,
+                count INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        
+        # Table for tracking Groq daily requests quota
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS groq_quota (
                 date TEXT PRIMARY KEY,
                 count INTEGER NOT NULL DEFAULT 0
             )
@@ -103,10 +116,52 @@ def increment_gemini_usage(date_str: str = None) -> int:
         row = cursor.fetchone()
         conn.close()
         new_count = row[0] if row else 1
-        logger.info(f"Gemini daily quota usage: {new_count}/1500 for {date_str}")
+        logger.info(f"Gemini daily quota usage: {new_count}/20 for {date_str}")
         return new_count
     except Exception as e:
         logger.error(f"Error incrementing Gemini usage in database: {e}")
+        return 0
+
+# Groq Quota Tracking Functions
+def get_groq_usage(date_str: str = None) -> int:
+    """Gets the Groq request count for a given date."""
+    if date_str is None:
+        date_str = get_current_date()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT count FROM groq_quota WHERE date = ?", (date_str,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else 0
+    except Exception as e:
+        logger.error(f"Error reading Groq usage from database: {e}")
+        return 0
+
+def increment_groq_usage(date_str: str = None) -> int:
+    """Increments and returns the Groq request count for a given date."""
+    if date_str is None:
+        date_str = get_current_date()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        # Insert or update
+        cursor.execute("""
+            INSERT INTO groq_quota (date, count) 
+            VALUES (?, 1)
+            ON CONFLICT(date) DO UPDATE SET count = count + 1
+        """, (date_str,))
+        conn.commit()
+        
+        # Retrieve updated count
+        cursor.execute("SELECT count FROM groq_quota WHERE date = ?", (date_str,))
+        row = cursor.fetchone()
+        conn.close()
+        new_count = row[0] if row else 1
+        logger.info(f"Groq daily quota usage: {new_count}/1000 for {date_str}")
+        return new_count
+    except Exception as e:
+        logger.error(f"Error incrementing Groq usage in database: {e}")
         return 0
 
 # Sheets Caching Functions

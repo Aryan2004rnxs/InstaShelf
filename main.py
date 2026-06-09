@@ -6,18 +6,26 @@ from datetime import datetime
 
 # Force native gRPC DNS resolution to fix macOS DNS lookup failures
 os.environ["GRPC_DNS_RESOLVER"] = "native"
+
+# Fix SSL CA Bundle paths overridden by Hugging Face Spaces (causes SSLError in containers)
+for var in ["CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"]:
+    if var in os.environ:
+        del os.environ[var]
 from contextlib import asynccontextmanager
 from typing import Optional, List
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import HTMLResponse
 from telegram import Update, Bot
 from telegram.ext import Application
+
+import utils
 
 import health
 import sheets
 import enrichment
 import dedup
-import gemini_client
+import ai_client
 from scraper import scrape_instagram_content
 from handlers import register_handlers
 from models import ShelfRow
@@ -29,6 +37,7 @@ logger = logging.getLogger("InstaShelf.main")
 HF_SPACE_URL = os.getenv("HF_SPACE_URL")
 WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_API_BASE_URL = os.getenv("TELEGRAM_API_BASE_URL")
 
 if not HF_SPACE_URL:
     logger.warning("HF_SPACE_URL is not set. Webhook configuration might fail.")
@@ -36,7 +45,11 @@ if not BOT_TOKEN:
     logger.error("TELEGRAM_BOT_TOKEN is not set. Bot startup will fail.")
 
 # Initialize python-telegram-bot application
-tg_app = Application.builder().token(BOT_TOKEN).build()
+builder = Application.builder().token(BOT_TOKEN)
+if TELEGRAM_API_BASE_URL:
+    logger.info(f"Using custom Telegram API base URL: {TELEGRAM_API_BASE_URL}")
+    builder.base_url(TELEGRAM_API_BASE_URL)
+tg_app = builder.build()
 
 def cleanup_temp_files(temp_dir: Optional[str], image_paths: List[str]):
     """Cleans up temporary files and directories created during scraping."""
@@ -82,8 +95,8 @@ async def background_worker(queue: asyncio.Queue, bot: Bot):
             # Step 2: Scrape Instagram content
             source_type, caption, image_paths, temp_dir = await scrape_instagram_content(url)
             
-            # Step 3: Gemini AI Extraction (passes images for vision, caption/subtitles for text)
-            extracted = await gemini_client.extract_content_with_gemini(caption, image_paths)
+            # Step 3: AI Extraction (passes images for vision, caption/subtitles for text)
+            extracted = await ai_client.extract_content_with_ai(caption, image_paths)
             
             # Fetch existing records from Sheets to run exact/semantic deduplication
             sheet_id = os.getenv("GOOGLE_SHEET_ID")
@@ -118,7 +131,7 @@ async def background_worker(queue: asyncio.Queue, bot: Bot):
                 enriched_videos.append((video, enriched, content_hash))
                 
             # Run batch smart deduplication check (reduces API calls from N to 1)
-            duplicate_video_titles = await gemini_client.check_smart_dedup_batch(videos_to_check, recent_titles)
+            duplicate_video_titles = await ai_client.check_smart_dedup_batch(videos_to_check, recent_titles)
             
             for video, enriched, content_hash in enriched_videos:
                 if enriched["title"] in duplicate_video_titles:
@@ -162,7 +175,7 @@ async def background_worker(queue: asyncio.Queue, bot: Bot):
                 enriched_books.append((book, enriched, content_hash))
                 
             # Run batch smart deduplication check (reduces API calls from N to 1)
-            duplicate_book_titles = await gemini_client.check_smart_dedup_batch(books_to_check, recent_titles)
+            duplicate_book_titles = await ai_client.check_smart_dedup_batch(books_to_check, recent_titles)
             
             for book, enriched, content_hash in enriched_books:
                 if enriched["title"] in duplicate_book_titles:
@@ -243,7 +256,7 @@ async def background_worker(queue: asyncio.Queue, bot: Bot):
                 new_saved_count, dup_count = await sheets.save_rows_to_shelf(rows_to_save)
                 
                 # Step 7: Reply to user with AI friendly summary
-                reply_text = await gemini_client.compose_reply_message(saved_items_summary, sheets_url)
+                reply_text = await ai_client.compose_reply_message(saved_items_summary, sheets_url)
                 await bot.send_message(chat_id=chat_id, text=reply_text)
                 
         except ValueError as ve:
@@ -264,17 +277,29 @@ async def lifespan(app: FastAPI):
     await tg_app.initialize()
     await tg_app.start()
     
-    # Configure bot webhook url dynamically on startup
-    if HF_SPACE_URL:
-        webhook_url = f"{HF_SPACE_URL}/webhook"
-        logger.info(f"Configuring Telegram webhook to: {webhook_url}")
-        await tg_app.bot.set_webhook(
-            url=webhook_url,
-            secret_token=WEBHOOK_SECRET if WEBHOOK_SECRET else None
-        )
+    # Check if polling mode is forced (e.g. for private Hugging Face spaces)
+    polling_mode = os.getenv("TELEGRAM_POLLING", "false").lower() == "true"
+    
+    if polling_mode:
+        logger.info("Forcing POLLING mode: Deleting any active webhook and starting polling...")
+        await tg_app.bot.delete_webhook(drop_pending_updates=True)
+        await asyncio.sleep(2)
+        await tg_app.updater.start_polling(drop_pending_updates=True)
+        logger.info("Bot started in POLLING mode successfully.")
     else:
-        logger.error("HF_SPACE_URL is not set. Webhook was not configured.")
-        
+        # Configure bot webhook url dynamically on startup
+        if HF_SPACE_URL:
+            webhook_url = f"{HF_SPACE_URL}/webhook"
+            logger.info(f"Configuring Telegram webhook to: {webhook_url}")
+            await tg_app.bot.delete_webhook(drop_pending_updates=True)
+            await asyncio.sleep(2)
+            await tg_app.bot.set_webhook(
+                url=webhook_url,
+                secret_token=WEBHOOK_SECRET if WEBHOOK_SECRET else None
+            )
+        else:
+            logger.error("HF_SPACE_URL is not set. Webhook was not configured.")
+            
     # Set up async in-process queue
     processing_queue = asyncio.Queue()
     
@@ -291,6 +316,8 @@ async def lifespan(app: FastAPI):
     
     # Shutdown sequence
     logger.info("Shutting down background tasks and Telegram bot...")
+    if polling_mode:
+        await tg_app.updater.stop()
     worker_task.cancel()
     try:
         await worker_task
@@ -305,6 +332,399 @@ app = FastAPI(lifespan=lifespan)
 
 # Add healthcheck route
 app.include_router(health.router)
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_dashboard():
+    """Serves the premium InstaShelf status & control web dashboard."""
+    groq_usage = utils.get_groq_usage()
+    gemini_usage = utils.get_gemini_usage()
+    pending_rows = len(utils.get_pending_rows())
+    
+    groq_percentage = min(100.0, (groq_usage / 1000.0) * 100.0)
+    gemini_percentage = min(100.0, (gemini_usage / 20.0) * 100.0)
+    
+    html_content = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InstaShelf Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --card-bg: rgba(255, 255, 255, 0.03);
+            --card-border: rgba(255, 255, 255, 0.08);
+            --text-primary: #ffffff;
+            --text-secondary: #94a3b8;
+            --primary: #8b5cf6;
+            --primary-glow: rgba(139, 92, 246, 0.15);
+            --success: #10b981;
+            --success-glow: rgba(16, 185, 129, 0.15);
+            --warning: #f59e0b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        /* Abstract glowing backgrounds */
+        body::before {
+            content: '';
+            position: absolute;
+            width: 400px;
+            height: 400px;
+            background: radial-gradient(circle, var(--primary-glow) 0%, transparent 70%);
+            top: -100px;
+            left: -100px;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        body::after {
+            content: '';
+            position: absolute;
+            width: 450px;
+            height: 450px;
+            background: radial-gradient(circle, rgba(16, 185, 129, 0.08) 0%, transparent 70%);
+            bottom: -100px;
+            right: -100px;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+            padding: 40px 20px;
+            z-index: 1;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        h1 {
+            font-size: 2.8rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #ffffff 40%, #a78bfa 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 8px;
+            letter-spacing: -0.5px;
+        }
+
+        header p {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+            font-weight: 300;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 24px;
+            margin-bottom: 32px;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            padding: 24px;
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            border-color: rgba(255, 255, 255, 0.15);
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .card-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .card-icon {
+            font-size: 1.4rem;
+            width: 40px;
+            height: 40px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--card-border);
+        }
+
+        .stat-value {
+            font-size: 2.2rem;
+            font-weight: 800;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: baseline;
+            gap: 4px;
+        }
+
+        .stat-unit {
+            font-size: 1rem;
+            font-weight: 400;
+            color: var(--text-secondary);
+        }
+
+        .stat-desc {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        /* Status Badge */
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--success-glow);
+            color: var(--success);
+            padding: 6px 14px;
+            border-radius: 30px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.05);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background-color: var(--success);
+            border-radius: 50%;
+            display: inline-block;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.9); opacity: 0.6; }
+            50% { transform: scale(1.15); opacity: 1; box-shadow: 0 0 10px var(--success); }
+            100% { transform: scale(0.9); opacity: 0.6; }
+        }
+
+        /* Progress Bar */
+        .progress-container {
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            margin-top: 15px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary) 0%, #a78bfa 100%);
+            border-radius: 10px;
+            transition: width 1s ease-in-out;
+        }
+
+        .progress-bar.gemini {
+            background: linear-gradient(90deg, #3b82f6 0%, #60a5fa 100%);
+        }
+
+        /* Guide Card */
+        .guide-card {
+            grid-column: span 1;
+        }
+
+        @media (min-width: 768px) {
+            .guide-card {
+                grid-column: span 2;
+            }
+        }
+
+        .guide-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .guide-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            font-size: 0.95rem;
+            color: var(--text-secondary);
+        }
+
+        .guide-num {
+            background: rgba(139, 92, 246, 0.1);
+            color: var(--primary);
+            border: 1px solid rgba(139, 92, 246, 0.2);
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            font-weight: 700;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+
+        footer {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin-top: 20px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            padding-top: 20px;
+            width: 100%;
+        }
+
+        footer a {
+            color: var(--primary);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        footer a:hover {
+            color: #a78bfa;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>InstaShelf</h1>
+            <p>Telegram Intelligent Content Extractor & Book Shelf Curation</p>
+        </header>
+
+        <div class="grid">
+            <!-- Bot Status Card -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">System Health</span>
+                    <span class="card-icon">⚡</span>
+                </div>
+                <div style="margin: 15px 0;">
+                    <div class="status-badge">
+                        <span class="status-dot"></span>
+                        Active & Running
+                    </div>
+                </div>
+                <p class="stat-desc">Webhook configuration active, receiving updates.</p>
+            </div>
+
+            <!-- Groq API Usage Card -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Groq API Quota (Primary)</span>
+                    <span class="card-icon">⚡</span>
+                </div>
+                <div class="stat-value">
+                    {groq_usage} <span class="stat-unit">/ 1000</span>
+                </div>
+                <p class="stat-desc">Daily primary AI extraction requests used.</p>
+                <div class="progress-container">
+                    <div class="progress-bar" style="width: {groq_percentage}%"></div>
+                </div>
+            </div>
+
+            <!-- Gemini API Usage Card -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Gemini API Quota (Fallback)</span>
+                    <span class="card-icon">🤖</span>
+                </div>
+                <div class="stat-value">
+                    {gemini_usage} <span class="stat-unit">/ 20</span>
+                </div>
+                <p class="stat-desc">Daily fallback AI extraction requests used.</p>
+                <div class="progress-container">
+                    <div class="progress-bar gemini" style="width: {gemini_percentage}%"></div>
+                </div>
+            </div>
+
+            <!-- Database / Caching Card -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Offline Cache Sync</span>
+                    <span class="card-icon">💾</span>
+                </div>
+                <div class="stat-value">
+                    {pending_rows}
+                    <span class="stat-unit">rows</span>
+                </div>
+                <p class="stat-desc">Pending Google Sheets updates in offline queue.</p>
+            </div>
+
+            <!-- Quick Instructions Card -->
+            <div class="card guide-card">
+                <div class="card-header">
+                    <span class="card-title">Telegram Bot Instructions</span>
+                    <span class="card-icon">📖</span>
+                </div>
+                <ul class="guide-list">
+                    <li class="guide-item">
+                        <span class="guide-num">1</span>
+                        <span>Send any Instagram Post or Reel URL to your Telegram bot.</span>
+                    </li>
+                    <li class="guide-item">
+                        <span class="guide-num">2</span>
+                        <span>The bot automatically scrapes the video keyframes/captions, runs Groq/Gemini Multimodal extraction, and dedups.</span>
+                    </li>
+                    <li class="guide-item">
+                        <span class="guide-num">3</span>
+                        <span>Identified books and YouTube videos are enriched and saved instantly to your Google Sheet.</span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <footer>
+            <p>Made with ❤️ by <a href="https://github.com/Aryan2004rnxs/InstaShelf" target="_blank">Aryan2004rnxs</a> | Powered by Groq Llama 4 & Gemini 2.5 & FastAPI</p>
+        </footer>
+    </div>
+</body>
+</html>"""
+    formatted_html = html_content.replace("{groq_usage}", str(groq_usage))\
+                                 .replace("{groq_percentage}", f"{groq_percentage:.1f}")\
+                                 .replace("{gemini_usage}", str(gemini_usage))\
+                                 .replace("{gemini_percentage}", f"{gemini_percentage:.1f}")\
+                                 .replace("{pending_rows}", str(pending_rows))
+    return HTMLResponse(content=formatted_html, status_code=200)
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
@@ -330,4 +750,5 @@ async def telegram_webhook(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=7860, reload=True)
+    dev_reload = os.getenv("DEV_RELOAD", "false").lower() == "true"
+    uvicorn.run("main:app", host="0.0.0.0", port=7860, reload=dev_reload)
