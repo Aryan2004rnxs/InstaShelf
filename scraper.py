@@ -141,16 +141,24 @@ async def scrape_instagram_content(url: str) -> Tuple[str, str, List[str], Optio
     caption = post_data.get("caption", "")
     image_paths = []
     
-    is_video = post_data.get("isVideo", False)
+    # Apify schema can vary, so check multiple keys for video detection
+    is_video = (
+        post_data.get("isVideo", False) or 
+        post_data.get("is_video", False) or 
+        post_data.get("type") == "Video" or
+        post_data.get("productType") == "clips" # sometimes reels are 'clips'
+    )
     
     if is_video:
-        video_url = post_data.get("videoUrl")
+        video_url = post_data.get("videoUrl") or post_data.get("video_url")
         if video_url:
             video_path = os.path.join(target_dir, "video.mp4")
             success = await download_file(video_url, video_path)
             if success:
                 # Extract keyframes using OpenCV
                 image_paths = await asyncio.to_thread(extract_video_keyframes, video_path, target_dir, 2.0)
+        else:
+            logger.warning("Post was detected as a video, but no video URL was found in Apify data!")
         
         logger.info(f"Reel processed via Apify. Keyframes extracted: {len(image_paths)}, Caption length: {len(caption)}")
         return "REEL", caption, image_paths, target_dir

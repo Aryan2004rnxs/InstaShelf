@@ -29,7 +29,10 @@ import ai_client
 from scraper import scrape_instagram_content
 from handlers import register_handlers
 from models import ShelfRow
+from pydantic import BaseModel
+from fastapi.staticfiles import StaticFiles
 
+import progress
 # Initialize logging
 logger = logging.getLogger("InstaShelf.main")
 
@@ -333,6 +336,79 @@ app = FastAPI(lifespan=lifespan)
 # Add healthcheck route
 app.include_router(health.router)
 
+# Mount frontend directory for static assets
+app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
+@app.get("/shelf", response_class=HTMLResponse)
+async def serve_shelf():
+    """Serves the interactive InstaShelf web view."""
+    try:
+        with open("frontend/index.html", "r") as f:
+            return HTMLResponse(content=f.read(), status_code=200)
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>Frontend not found. Please build or create the frontend/index.html file.</h1>", status_code=404)
+
+@app.get("/api/shelf")
+async def api_get_shelf():
+    """API endpoint to get all shelf items with their progress."""
+    rows = await sheets.get_all_rows_sync_fallback()
+    progress_data = progress.get_all_progress()
+    return {"status": "success", "data": rows, "progress": progress_data}
+
+@app.get("/api/progress")
+async def api_get_progress():
+    """API endpoint to get all user progress."""
+    progress_data = progress.get_all_progress()
+    return {"status": "success", "progress": progress_data}
+
+class ProgressUpdate(BaseModel):
+    content_hash: str
+    progress_seconds: int
+    is_completed: bool
+
+@app.post("/api/progress")
+async def api_update_progress(update: ProgressUpdate):
+    """API endpoint to update user progress for an item."""
+    success = progress.update_progress(update.content_hash, update.progress_seconds, update.is_completed)
+    if success:
+        return {"status": "success"}
+    else:
+        return {"status": "error", "message": "Failed to update progress"}, 500
+
+class NoteCreate(BaseModel):
+    content_hash: str
+    timestamp_seconds: int
+    note_text: str
+
+@app.get("/api/notes/{content_hash}")
+async def api_get_notes(content_hash: str):
+    """API endpoint to get all notes for a specific content item."""
+    notes = progress.get_notes(content_hash)
+    return {"status": "success", "notes": notes}
+
+@app.post("/api/notes")
+async def api_create_note(note: NoteCreate):
+    """API endpoint to create a new timestamped note."""
+    new_note = progress.add_note(note.content_hash, note.timestamp_seconds, note.note_text)
+    if new_note:
+        return {"status": "success", "note": new_note}
+    return {"status": "error", "message": "Failed to create note"}, 500
+
+class GenerateNoteRequest(BaseModel):
+    title: str
+
+@app.post("/api/notes/{content_hash}/generate")
+async def api_generate_notes_summary(content_hash: str, req: GenerateNoteRequest):
+    """API endpoint to generate an AI summary from existing notes."""
+    notes = progress.get_notes(content_hash)
+    if not notes:
+        return {"status": "error", "message": "No notes found"}, 400
+    
+    summary = await ai_client.generate_notes_summary(req.title, notes)
+    if summary:
+        return {"status": "success", "summary": summary}
+    return {"status": "error", "message": "Failed to generate summary"}, 500
+
 @app.get("/", response_class=HTMLResponse)
 async def serve_dashboard():
     """Serves the premium InstaShelf status & control web dashboard."""
@@ -622,6 +698,25 @@ async def serve_dashboard():
         footer a:hover {
             color: #a78bfa;
         }
+
+        .shelf-btn {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 12px 32px;
+            background: linear-gradient(135deg, var(--primary) 0%, #a78bfa 100%);
+            color: white;
+            text-decoration: none;
+            font-weight: 600;
+            border-radius: 30px;
+            font-size: 1.1rem;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(139, 92, 246, 0.4);
+        }
+
+        .shelf-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(139, 92, 246, 0.6);
+        }
     </style>
 </head>
 <body>
@@ -629,6 +724,7 @@ async def serve_dashboard():
         <header>
             <h1>InstaShelf</h1>
             <p>Telegram Intelligent Content Extractor & Book Shelf Curation</p>
+            <a href="/shelf" class="shelf-btn">✨ Open Interactive Shelf</a>
         </header>
 
         <div class="grid">

@@ -215,15 +215,10 @@ Rules:
 
     # 1. Attempt Multimodal Vision first (if image_paths are provided)
     if image_paths:
-        # A. Try Groq Multimodal Vision (Primary)
-        if GROQ_KEY:
+        # A. Try Groq Multimodal Vision (Primary if <= 5 images)
+        if GROQ_KEY and len(image_paths) <= 5:
             try:
-                # Groq has a limit of 5 images per request
-                groq_images = image_paths
-                if len(image_paths) > 5:
-                    logger.info(f"Slicing image_paths from {len(image_paths)} to first 5 images for Groq API limit.")
-                    groq_images = image_paths[:5]
-                logger.info(f"Attempting multimodal Groq vision extraction on {len(groq_images)} images...")
+                logger.info(f"Attempting multimodal Groq vision extraction on {len(image_paths)} images...")
                 messages = [
                     {"role": "system", "content": SYSTEM_PROMPT}
                 ]
@@ -232,7 +227,7 @@ Rules:
                     {"type": "text", "text": prompt_template + (f"\n\nTEXT:\n{raw_text}" if raw_text else "")}
                 ]
                 
-                for path in groq_images:
+                for path in image_paths:
                     base64_data = image_to_base64(path)
                     mime_type, _ = mimetypes.guess_type(path)
                     if not mime_type:
@@ -419,6 +414,8 @@ against the list of existing titles:
 {json.dumps(existing_titles)}
 
 Determine if the new title refers to the exact same video, book, or link as any item in the existing list (allowing for different casing, minor punctuation differences, added words like "Watch:", or subtitles).
+CRITICAL: Do NOT hallucinate. Only flag as a duplicate if there is a CLEAR semantic match in the existing list.
+If it is NOT a duplicate, you MUST set "is_duplicate" to false and "duplicate_title" to null.
 
 Respond ONLY with a valid JSON object matching this structure:
 {{
@@ -427,7 +424,24 @@ Respond ONLY with a valid JSON object matching this structure:
 }}
 """
 
-    # A. Try Groq
+    # A. Try Gemini First for Dedup (More reliable logic/JSON adherence)
+    if GEMINI_KEY:
+        try:
+            response_text = await call_gemini_with_quota(
+                GEMINI_MODEL_NAME,
+                [prompt],
+                json_mode=True
+            )
+            cleaned_json = clean_json_text(response_text)
+            data = json.loads(cleaned_json)
+            is_dup = data.get("is_duplicate", False)
+            if is_dup:
+                logger.info(f"Smart Dedup (Gemini) matched: '{new_title}' semantically same as '{data.get('duplicate_title')}'")
+            return is_dup
+        except Exception as e:
+            logger.warning(f"Gemini smart dedup failed: {e}. Trying Groq fallback...")
+
+    # B. Try Groq Fallback
     if GROQ_KEY:
         try:
             messages = [
@@ -445,24 +459,7 @@ Respond ONLY with a valid JSON object matching this structure:
                 logger.info(f"Smart Dedup (Groq) matched: '{new_title}' semantically same as '{data.get('duplicate_title')}'")
             return is_dup
         except Exception as e:
-            logger.warning(f"Groq smart dedup failed: {e}. Trying Gemini...")
-
-    # B. Try Gemini Fallback
-    if GEMINI_KEY:
-        try:
-            response_text = await call_gemini_with_quota(
-                GEMINI_MODEL_NAME,
-                [prompt],
-                json_mode=True
-            )
-            cleaned_json = clean_json_text(response_text)
-            data = json.loads(cleaned_json)
-            is_dup = data.get("is_duplicate", False)
-            if is_dup:
-                logger.info(f"Smart Dedup (Gemini) matched: '{new_title}' semantically same as '{data.get('duplicate_title')}'")
-            return is_dup
-        except Exception as e:
-            logger.error(f"Gemini smart dedup failed: {e}")
+            logger.error(f"Groq smart dedup failed: {e}")
 
     return False
 
@@ -483,7 +480,9 @@ We have a list of new content titles:
 We want to check if any of these new titles refer to the exact same video, book, or link as any item in our list of existing titles:
 {json.dumps(existing_titles)}
 
-Determine which of the new titles are duplicates (allowing for minor differences in casing, punctuation, spelling, added words like "Watch:", or subtitles).
+Determine which of the new titles are duplicates of an existing title (allowing for minor differences in casing, punctuation, spelling, added words like "Watch:", or subtitles).
+CRITICAL: Do NOT hallucinate. Only flag as a duplicate if there is a CLEAR semantic match in the existing list.
+If none of the new titles are duplicates, you MUST return an empty list: {{"duplicates": []}}.
 
 Respond ONLY with a valid JSON object matching this structure:
 {{
@@ -496,7 +495,30 @@ Respond ONLY with a valid JSON object matching this structure:
 }}
 """
 
-    # A. Try Groq
+    # A. Try Gemini First for Batch Dedup (More reliable logic/JSON adherence)
+    if GEMINI_KEY:
+        try:
+            response_text = await call_gemini_with_quota(
+                GEMINI_MODEL_NAME,
+                [prompt],
+                json_mode=True
+            )
+            cleaned_json = clean_json_text(response_text)
+            data = json.loads(cleaned_json)
+            
+            duplicates = set()
+            for item in data.get("duplicates", []):
+                new_title = item.get("new_title")
+                existing_match = item.get("existing_title_match")
+                if new_title:
+                    duplicates.add(new_title)
+                    logger.debug(f"Smart Dedup Match: '{new_title}' matched with existing '{existing_match}'")
+            logger.info(f"Batch Smart Dedup (Gemini) found {len(duplicates)} duplicates.")
+            return duplicates
+        except Exception as e:
+            logger.warning(f"Gemini batch smart dedup failed: {e}. Trying Groq fallback...")
+
+    # B. Try Groq Fallback
     if GROQ_KEY:
         try:
             messages = [
@@ -513,33 +535,14 @@ Respond ONLY with a valid JSON object matching this structure:
             duplicates = set()
             for item in data.get("duplicates", []):
                 new_title = item.get("new_title")
+                existing_match = item.get("existing_title_match")
                 if new_title:
                     duplicates.add(new_title)
+                    logger.debug(f"Smart Dedup Match: '{new_title}' matched with existing '{existing_match}'")
             logger.info(f"Batch Smart Dedup (Groq) found {len(duplicates)} duplicates.")
             return duplicates
         except Exception as e:
-            logger.warning(f"Groq batch smart dedup failed: {e}. Trying Gemini...")
-
-    # B. Try Gemini Fallback
-    if GEMINI_KEY:
-        try:
-            response_text = await call_gemini_with_quota(
-                GEMINI_MODEL_NAME,
-                [prompt],
-                json_mode=True
-            )
-            cleaned_json = clean_json_text(response_text)
-            data = json.loads(cleaned_json)
-            
-            duplicates = set()
-            for item in data.get("duplicates", []):
-                new_title = item.get("new_title")
-                if new_title:
-                    duplicates.add(new_title)
-            logger.info(f"Batch Smart Dedup (Gemini) found {len(duplicates)} duplicates.")
-            return duplicates
-        except Exception as e:
-            logger.error(f"Gemini batch smart dedup failed: {e}")
+            logger.error(f"Groq batch smart dedup failed: {e}")
 
     return set()
 
@@ -675,3 +678,50 @@ Shelf items:
             logger.error(f"Gemini AI search failed: {e}")
 
     return "Failed to complete AI search. Try again later!"
+
+async def generate_notes_summary(video_title: str, notes_list: List[Dict[str, Any]]) -> str:
+    """
+    Generates a master summary from a list of user video notes.
+    Uses Groq first, falls back to Gemini.
+    """
+    if not notes_list:
+        return "No notes provided to generate a summary."
+        
+    prompt = f"""
+You are an expert study assistant. The user has taken timestamped notes while watching the video: "{video_title}".
+Here are their raw notes:
+{json.dumps(notes_list)}
+
+Your task is to take these raw notes and generate a highly descriptive, comprehensive, and engaging "Master Note".
+REQUIREMENTS:
+1. Organize the summary logically based on the progression of the video (using the timestamps as reference points).
+2. Include fun doodles (using emojis or ascii art) to make it engaging.
+3. Include structured graphs, flowcharts, or tables (using Markdown) to visualize the concepts discussed.
+4. Expand on the user's brief notes with educational context if appropriate.
+5. Format the entire response in beautiful Markdown.
+"""
+
+    # A. Try Groq
+    if GROQ_KEY:
+        try:
+            messages = [
+                {"role": "user", "content": prompt}
+            ]
+            response_text = await call_groq_with_quota(
+                messages,
+                model_name=GROQ_TEXT_MODEL,
+                json_mode=False
+            )
+            return response_text.strip()
+        except Exception as e:
+            logger.warning(f"Groq generate notes summary failed: {e}. Trying Gemini...")
+
+    # B. Try Gemini Fallback
+    if GEMINI_KEY:
+        try:
+            response_text = await call_gemini_with_quota(GEMINI_MODEL_NAME, [prompt])
+            return response_text.strip()
+        except Exception as e:
+            logger.error(f"Gemini generate notes summary failed: {e}")
+
+    return "Failed to generate AI Master Note. Try again later!"

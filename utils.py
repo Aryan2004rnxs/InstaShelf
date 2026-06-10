@@ -67,6 +67,27 @@ def init_db():
             )
         """)
         
+        # Table for storing user interaction progress (YouTube watch time, read status)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_progress (
+                content_hash TEXT PRIMARY KEY,
+                progress_seconds INTEGER NOT NULL DEFAULT 0,
+                is_completed BOOLEAN NOT NULL DEFAULT 0,
+                last_updated TEXT NOT NULL
+            )
+        """)
+        
+        # Table for storing user video timestamp notes
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS video_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content_hash TEXT NOT NULL,
+                timestamp_seconds INTEGER NOT NULL,
+                note_text TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        
         conn.commit()
         conn.close()
         logger.info(f"Local SQLite database initialized at {DB_PATH}")

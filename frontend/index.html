@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InstaShelf - Japanese Aesthetic</title>
+    <!-- Google Fonts for modern Japanese typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Marked.js for rendering AI markdown summaries -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <!-- Background Elements -->
+    <div class="bg-shape bg-shape-1"></div>
+    <div class="bg-shape bg-shape-2"></div>
+
+    <div class="app-container">
+        <!-- Header & Search/Filter Bar -->
+        <header class="glass-panel main-header">
+            <div class="header-content">
+                <div class="logo-area">
+                    <h1>InstaShelf <span class="jp-text">本棚</span></h1>
+                    <p>Curated Collection</p>
+                </div>
+                
+                <div class="controls-area">
+                    <div class="search-box">
+                        <i class="fas fa-search"></i>
+                        <input type="text" id="searchInput" placeholder="Search title, creator, or thought...">
+                    </div>
+                    
+                    <div class="filter-box">
+                        <select id="typeFilter">
+                            <option value="ALL">All Types (すべて)</option>
+                            <option value="YOUTUBE">YouTube</option>
+                            <option value="BOOK">Books</option>
+                            <option value="LINK">Links</option>
+                        </select>
+                    </div>
+                    
+                    <div class="filter-box">
+                        <select id="genreFilter">
+                            <option value="ALL">All Genres</option>
+                            <option value="motivational">Motivational</option>
+                            <option value="sales">Sales</option>
+                            <option value="marketing">Marketing</option>
+                            <option value="discipline">Discipline</option>
+                            <option value="finance">Finance</option>
+                            <option value="money">Money</option>
+                            <option value="mind">Mind</option>
+                            <option value="peace">Peace</option>
+                            <option value="tech">Tech</option>
+                        </select>
+                    </div>
+                    
+                    <div class="filter-box">
+                        <select id="statusFilter">
+                            <option value="ALL">All Status</option>
+                            <option value="UNREAD">Unread / Unwatched</option>
+                            <option value="COMPLETED">Completed</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content Grid -->
+        <main id="shelfGrid" class="shelf-grid">
+            <!-- Cards will be dynamically injected here by app.js -->
+            <div class="loading-spinner">
+                <i class="fas fa-circle-notch fa-spin"></i> Loading your shelf...
+            </div>
+        </main>
+    </div>
+
+    <div id="ytModal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel modal-split">
+            <button class="close-btn" id="closeYtModal"><i class="fas fa-times"></i></button>
+            
+            <!-- Left Side: Player & Info -->
+            <div class="modal-left">
+                <div class="player-container" id="playerContainer">
+                    <div id="ytPlayer"></div>
+                </div>
+                <div class="modal-details">
+                    <h2 id="modalTitle">Video Title</h2>
+                    <p id="modalCreator" class="creator-text">Creator</p>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar" id="modalProgressBar"></div>
+                    </div>
+                    <div class="modal-actions">
+                        <button class="action-btn primary-btn" id="markFinishedBtn">
+                            <i class="fas fa-check"></i> Mark as Finished
+                        </button>
+                        <a href="#" target="_blank" class="action-btn secondary-btn" id="openOriginalBtn">
+                            <i class="fas fa-external-link-alt"></i> Open Original
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Side: Notes Panel -->
+            <div class="modal-right notes-panel" id="notesPanel">
+                <h3><i class="fas fa-pen-nib"></i> Smart Notes</h3>
+                
+                <div class="note-input-area">
+                    <input type="text" id="newNoteInput" placeholder="Take a note at current time...">
+                    <button id="addNoteBtn" class="action-btn primary-btn"><i class="fas fa-plus"></i></button>
+                </div>
+                
+                <div class="notes-list" id="notesList">
+                    <!-- Notes injected here -->
+                </div>
+                
+                <button id="generateSummaryBtn" class="action-btn ai-btn">
+                    <i class="fas fa-magic"></i> Generate AI Master Note
+                </button>
+
+                <!-- AI Summary Output Area -->
+                <div id="aiSummaryOutput" class="ai-summary-container hidden">
+                    <div class="ai-summary-content markdown-body" id="aiSummaryContent"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- YouTube IFrame API -->
+    <script src="https://www.youtube.com/iframe_api"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>

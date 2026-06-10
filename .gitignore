@@ -24,3 +24,7 @@ instashelf_*/
 # System files
 .DS_Store
 Thumbs.db
+
+cookies.txt
+test_*
+
