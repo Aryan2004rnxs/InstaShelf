@@ -161,6 +161,13 @@ function openItemModal(item) {
     }
     openOriginalBtn.href = itemUrl;
     
+    // Automatically copy the title to clipboard for Manga/Manhwa if they need to manually search AsuraScans
+    openOriginalBtn.onclick = () => {
+        if (item.content_type === 'MANGA') {
+            navigator.clipboard.writeText(item.title).catch(err => console.error('Clipboard copy failed:', err));
+        }
+    };
+    
     updateFinishedBtnState(prog.is_completed);
 
     const playerContainer = document.getElementById('playerContainer');
