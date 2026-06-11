@@ -40,7 +40,7 @@ GEMINI_MODEL_NAME = "gemini-2.5-flash"
 SYSTEM_PROMPT = (
     "You are a content extraction assistant. Your job is to analyze text or images from "
     "Instagram posts and identify all references to YouTube videos, books, podcasts, courses, "
-    "and useful links."
+    "anime, manga, movies, TV shows, quotes, ideas, and useful links."
 )
 
 # Global OCR Reader lazy singleton
@@ -167,7 +167,7 @@ async def extract_content_with_ai(raw_text: str, image_paths: List[str] = None) 
       
     Falls back to regex extraction (fallback_extractor.py) if all AI methods fail or quotas are hit.
     """
-    prompt_template = """Analyze this text or images from an Instagram post and extract ALL references to external content (YouTube videos, books, courses, other links).
+    prompt_template = """Analyze this text or images from an Instagram post and extract ALL references to external content (YouTube videos, books, courses, anime, manga, movies, tv shows, ideas, quotes, other links).
 
 If the input is text, note that it may contain OCR-extracted text from screenshots (which shows YouTube search results containing video titles, channel names, view counts, and durations). Reconstruct these into YouTube video references.
 
@@ -194,6 +194,43 @@ Return a JSON object with this exact structure:
       "tags": ["#tag1", "#tag2"]
     }
   ],
+  "anime": [
+    {
+      "title": "anime title",
+      "search_query": "anime title for search",
+      "confidence": 0.0-1.0,
+      "context": "sentence where this was mentioned",
+      "tags": ["#anime"]
+    }
+  ],
+  "manga": [
+    {
+      "title": "manga/manhwa title",
+      "search_query": "manga title for search",
+      "confidence": 0.0-1.0,
+      "context": "sentence where this was mentioned",
+      "tags": ["#manga"]
+    }
+  ],
+  "movies_tv": [
+    {
+      "title": "movie or tv show title",
+      "type": "MOVIE or TV_SHOW",
+      "search_query": "title for search",
+      "confidence": 0.0-1.0,
+      "context": "sentence where this was mentioned",
+      "tags": ["#movie"]
+    }
+  ],
+  "ideas": [
+    {
+      "text": "the quote, thought, or idea",
+      "author": "author or speaker if mentioned (or null)",
+      "confidence": 0.0-1.0,
+      "context": "sentence where this was mentioned",
+      "tags": ["#quote"]
+    }
+  ],
   "other_links": [
     {
       "url": "full URL",
@@ -209,7 +246,7 @@ Rules:
 - confidence 1.0 = exact URL given.
 - confidence 0.8 = title clearly stated.
 - confidence 0.5 = inferred from context.
-- Categorize each item with 1-3 appropriate tags (e.g. #tech, #ai, #productivity, #finance, #books, #podcast, #design).
+- Categorize each item with 1-3 appropriate tags (e.g. #tech, #ai, #productivity, #finance, #books, #podcast, #design, #anime, #manga, #movies, #quotes).
 - Return ONLY valid JSON. No markdown, no preamble.
 """
 
@@ -253,6 +290,10 @@ Rules:
                     "youtube_videos": parsed.get("youtube_videos", []),
                     "books": parsed.get("books", []),
                     "other_links": parsed.get("other_links", []),
+                    "anime": parsed.get("anime", []),
+                    "manga": parsed.get("manga", []),
+                    "movies_tv": parsed.get("movies_tv", []),
+                    "ideas": parsed.get("ideas", []),
                     "summary": parsed.get("summary", "")
                 }
                 logger.info("Multimodal Groq extraction succeeded.")
@@ -293,6 +334,10 @@ Rules:
                             "youtube_videos": parsed.get("youtube_videos", []),
                             "books": parsed.get("books", []),
                             "other_links": parsed.get("other_links", []),
+                            "anime": parsed.get("anime", []),
+                            "manga": parsed.get("manga", []),
+                            "movies_tv": parsed.get("movies_tv", []),
+                            "ideas": parsed.get("ideas", []),
                             "summary": parsed.get("summary", "")
                         }
                         logger.info("Multimodal Gemini extraction succeeded.")
@@ -346,6 +391,10 @@ Rules:
                 "youtube_videos": parsed.get("youtube_videos", []),
                 "books": parsed.get("books", []),
                 "other_links": parsed.get("other_links", []),
+                "anime": parsed.get("anime", []),
+                "manga": parsed.get("manga", []),
+                "movies_tv": parsed.get("movies_tv", []),
+                "ideas": parsed.get("ideas", []),
                 "summary": parsed.get("summary", "")
             }
             logger.info("Text-only Groq extraction succeeded.")
@@ -369,6 +418,10 @@ Rules:
                 "youtube_videos": parsed.get("youtube_videos", []),
                 "books": parsed.get("books", []),
                 "other_links": parsed.get("other_links", []),
+                "anime": parsed.get("anime", []),
+                "manga": parsed.get("manga", []),
+                "movies_tv": parsed.get("movies_tv", []),
+                "ideas": parsed.get("ideas", []),
                 "summary": parsed.get("summary", "")
             }
             logger.info("Text-only Gemini extraction succeeded.")
@@ -389,6 +442,10 @@ Rules:
                     "youtube_videos": parsed.get("youtube_videos", []),
                     "books": parsed.get("books", []),
                     "other_links": parsed.get("other_links", []),
+                    "anime": parsed.get("anime", []),
+                    "manga": parsed.get("manga", []),
+                    "movies_tv": parsed.get("movies_tv", []),
+                    "ideas": parsed.get("ideas", []),
                     "summary": parsed.get("summary", "")
                 }
                 logger.info("Text-only Gemini retry extraction succeeded.")

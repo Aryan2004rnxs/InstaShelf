@@ -130,7 +130,6 @@ function renderGrid() {
             <div class="card-content">
                 <h3 class="card-title">${item.title}</h3>
                 <p class="card-creator">${item.creator ? '<i class="fas fa-user-edit"></i> ' + item.creator : ''}</p>
-                <div class="card-summary">${item.ai_summary || item.raw_context || ''}</div>
                 <div class="card-progress-bg">
                     <div class="card-progress-fill" style="width: ${width}%"></div>
                 </div>
@@ -154,17 +153,40 @@ function openItemModal(item) {
     
     modalTitle.textContent = item.title;
     modalCreator.textContent = item.creator || 'Unknown Creator';
-    openOriginalBtn.href = item.url;
+    
+    // Fix legacy tachiyomi links that were already saved in the database
+    let itemUrl = item.url;
+    if (itemUrl && itemUrl.includes('github.com/tachiyomiorg')) {
+        itemUrl = `https://asurascans.com/?s=${encodeURIComponent(item.title)}`;
+    }
+    openOriginalBtn.href = itemUrl;
     
     updateFinishedBtnState(prog.is_completed);
 
     const playerContainer = document.getElementById('playerContainer');
+    const moviePlayer = document.getElementById('moviePlayer');
     const ytId = item.content_type === 'YOUTUBE' ? extractYouTubeId(item.url) : null;
+    const adblockWarning = document.getElementById('adblockWarning');
+
+    if (item.content_type === 'MOVIE_TV' || item.content_type === 'ANIME' || item.content_type === 'MANGA') {
+        if (adblockWarning) adblockWarning.classList.remove('hidden');
+    } else {
+        if (adblockWarning) adblockWarning.classList.add('hidden');
+    }
+
+    // Reset displays
+    document.getElementById('ytPlayer').style.display = 'none';
+    if (moviePlayer) {
+        moviePlayer.style.display = 'none';
+        moviePlayer.src = '';
+    }
 
     if (ytId) {
         playerContainer.style.display = 'block';
         notesPanel.style.display = 'flex';
         ytModal.querySelector('.modal-content').classList.add('modal-split');
+        
+        document.getElementById('ytPlayer').style.display = 'block';
         if (player) {
             player.loadVideoById({
                 videoId: ytId,
@@ -203,6 +225,8 @@ function closeItemModal() {
     if (player && typeof player.stopVideo === 'function') {
         player.stopVideo();
     }
+    const moviePlayer = document.getElementById('moviePlayer');
+    if (moviePlayer) moviePlayer.src = '';
     stopProgressSync();
     currentActiveItem = null;
 }
@@ -404,9 +428,107 @@ async function handleGenerateSummary() {
     }
 }
 
+// Genre Mappings
+const genreMapping = {
+    'ALL': [
+        { value: 'ALL', label: 'All Genres' },
+        { value: 'motivational', label: 'Motivational' },
+        { value: 'finance', label: 'Finance' },
+        { value: 'tech', label: 'Tech' },
+        { value: 'action', label: 'Action' },
+        { value: 'romance', label: 'Romance' },
+        { value: 'comedy', label: 'Comedy' },
+        { value: 'sci-fi', label: 'Sci-Fi' },
+        { value: 'fantasy', label: 'Fantasy' }
+    ],
+    'YOUTUBE': [
+        { value: 'ALL', label: 'All Genres' },
+        { value: 'motivational', label: 'Motivational' },
+        { value: 'sales', label: 'Sales' },
+        { value: 'marketing', label: 'Marketing' },
+        { value: 'discipline', label: 'Discipline' },
+        { value: 'finance', label: 'Finance' },
+        { value: 'money', label: 'Money' },
+        { value: 'mind', label: 'Mind' },
+        { value: 'peace', label: 'Peace' },
+        { value: 'tech', label: 'Tech' },
+        { value: 'entertainment', label: 'Entertainment' },
+        { value: 'education', label: 'Education' }
+    ],
+    'MOVIE_TV': [
+        { value: 'ALL', label: 'All Genres' },
+        { value: 'action', label: 'Action' },
+        { value: 'comedy', label: 'Comedy' },
+        { value: 'drama', label: 'Drama' },
+        { value: 'sci-fi', label: 'Sci-Fi' },
+        { value: 'fantasy', label: 'Fantasy' },
+        { value: 'horror', label: 'Horror' },
+        { value: 'thriller', label: 'Thriller' },
+        { value: 'romance', label: 'Romance' },
+        { value: 'documentary', label: 'Documentary' }
+    ],
+    'ANIME': [
+        { value: 'ALL', label: 'All Genres' },
+        { value: 'shounen', label: 'Shounen' },
+        { value: 'shoujo', label: 'Shoujo' },
+        { value: 'isekai', label: 'Isekai' },
+        { value: 'slice of life', label: 'Slice of Life' },
+        { value: 'mecha', label: 'Mecha' },
+        { value: 'action', label: 'Action' },
+        { value: 'romance', label: 'Romance' },
+        { value: 'fantasy', label: 'Fantasy' }
+    ],
+    'MANGA': [
+        { value: 'ALL', label: 'All Genres' },
+        { value: 'action', label: 'Action' },
+        { value: 'romance', label: 'Romance' },
+        { value: 'fantasy', label: 'Fantasy' },
+        { value: 'isekai', label: 'Isekai' },
+        { value: 'martial arts', label: 'Martial Arts' },
+        { value: 'comedy', label: 'Comedy' },
+        { value: 'drama', label: 'Drama' },
+        { value: 'slice of life', label: 'Slice of Life' }
+    ],
+    'BOOK': [
+        { value: 'ALL', label: 'All Genres' },
+        { value: 'fiction', label: 'Fiction' },
+        { value: 'non-fiction', label: 'Non-Fiction' },
+        { value: 'self-help', label: 'Self-Help' },
+        { value: 'biography', label: 'Biography' },
+        { value: 'fantasy', label: 'Fantasy' },
+        { value: 'sci-fi', label: 'Sci-Fi' },
+        { value: 'mystery', label: 'Mystery' },
+        { value: 'romance', label: 'Romance' },
+        { value: 'history', label: 'History' }
+    ]
+};
+
+function updateGenreFilter() {
+    const selectedType = typeFilter.value;
+    const genres = genreMapping[selectedType] || genreMapping['ALL'];
+    const prevSelected = genreFilter.value;
+    
+    genreFilter.innerHTML = '';
+    genres.forEach(g => {
+        const option = document.createElement('option');
+        option.value = g.value;
+        option.textContent = g.label;
+        genreFilter.appendChild(option);
+    });
+    
+    if (genres.some(g => g.value === prevSelected)) {
+        genreFilter.value = prevSelected;
+    } else {
+        genreFilter.value = 'ALL';
+    }
+}
+
 // Event Listeners
 searchInput.addEventListener('input', renderGrid);
-typeFilter.addEventListener('change', renderGrid);
+typeFilter.addEventListener('change', () => {
+    updateGenreFilter();
+    renderGrid();
+});
 statusFilter.addEventListener('change', renderGrid);
 genreFilter.addEventListener('change', renderGrid);
 closeYtModal.addEventListener('click', closeItemModal);
@@ -424,4 +546,7 @@ ytModal.addEventListener('click', (e) => {
 });
 
 // Init
-document.addEventListener('DOMContentLoaded', loadData);
+document.addEventListener('DOMContentLoaded', () => {
+    updateGenreFilter();
+    loadData();
+});

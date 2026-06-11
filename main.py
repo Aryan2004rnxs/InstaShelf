@@ -240,9 +240,128 @@ async def background_worker(queue: asyncio.Queue, bot: Bot):
                 rows_to_save.append(row)
                 saved_items_summary.append({"title": link_title, "type": "LINK"})
                 
+            # Process extracted Anime
+            for anime in extracted.anime:
+                enriched = await enrichment.enrich_anime(anime.title, anime.search_query)
+                content_hash = dedup.compute_anime_hash(enriched["title"])
+                
+                if content_hash in existing_hashes:
+                    logger.info(f"Duplicate Anime found (hash: {content_hash}). Skipping.")
+                    continue
+                    
+                row = ShelfRow(
+                    saved_at=datetime.utcnow().isoformat() + "Z",
+                    source_type=source_type,
+                    content_type="ANIME",
+                    title=enriched["title"],
+                    creator="",
+                    url=enriched["url"],
+                    thumbnail_url=enriched["thumbnail_url"],
+                    confidence=anime.confidence,
+                    instagram_url=url,
+                    raw_context=anime.context,
+                    ai_summary=extracted.summary,
+                    content_hash=content_hash,
+                    status="UNREAD",
+                    gemini_notes=f"Original Title: {anime.title}",
+                    tags=" ".join(anime.tags)
+                )
+                rows_to_save.append(row)
+                saved_items_summary.append({"title": enriched["title"], "type": "ANIME"})
+                recent_titles.append(enriched["title"])
+
+            # Process extracted Manga
+            for manga in extracted.manga:
+                enriched = await enrichment.enrich_manga(manga.title, manga.search_query)
+                content_hash = dedup.compute_manga_hash(enriched["title"])
+                
+                if content_hash in existing_hashes:
+                    logger.info(f"Duplicate Manga found (hash: {content_hash}). Skipping.")
+                    continue
+                    
+                row = ShelfRow(
+                    saved_at=datetime.utcnow().isoformat() + "Z",
+                    source_type=source_type,
+                    content_type="MANGA",
+                    title=enriched["title"],
+                    creator="",
+                    url=enriched["url"],
+                    thumbnail_url=enriched["thumbnail_url"],
+                    confidence=manga.confidence,
+                    instagram_url=url,
+                    raw_context=manga.context,
+                    ai_summary=extracted.summary,
+                    content_hash=content_hash,
+                    status="UNREAD",
+                    gemini_notes=f"Original Title: {manga.title}",
+                    tags=" ".join(manga.tags)
+                )
+                rows_to_save.append(row)
+                saved_items_summary.append({"title": enriched["title"], "type": "MANGA"})
+                recent_titles.append(enriched["title"])
+
+            # Process extracted Movies/TV
+            for mtv in extracted.movies_tv:
+                enriched = await enrichment.enrich_movie_tv(mtv.title, mtv.type, mtv.search_query)
+                content_hash = dedup.compute_movie_hash(enriched["title"], mtv.type)
+                
+                if content_hash in existing_hashes:
+                    logger.info(f"Duplicate Movie/TV found (hash: {content_hash}). Skipping.")
+                    continue
+                    
+                row = ShelfRow(
+                    saved_at=datetime.utcnow().isoformat() + "Z",
+                    source_type=source_type,
+                    content_type="MOVIE_TV",
+                    title=enriched["title"],
+                    creator="",
+                    url=enriched["url"],
+                    thumbnail_url=enriched["thumbnail_url"],
+                    confidence=mtv.confidence,
+                    instagram_url=url,
+                    raw_context=mtv.context,
+                    ai_summary=extracted.summary,
+                    content_hash=content_hash,
+                    status="UNREAD",
+                    gemini_notes=f"Original Title: {mtv.title}",
+                    tags=" ".join(mtv.tags)
+                )
+                rows_to_save.append(row)
+                saved_items_summary.append({"title": enriched["title"], "type": "MOVIE_TV"})
+                recent_titles.append(enriched["title"])
+
+            # Process extracted Ideas
+            for idea in extracted.ideas:
+                enriched = await enrichment.enrich_idea(idea.text, idea.author)
+                content_hash = dedup.compute_idea_hash(idea.text)
+                
+                if content_hash in existing_hashes:
+                    logger.info(f"Duplicate Idea found (hash: {content_hash}). Skipping.")
+                    continue
+                    
+                row = ShelfRow(
+                    saved_at=datetime.utcnow().isoformat() + "Z",
+                    source_type=source_type,
+                    content_type="IDEA",
+                    title=enriched["title"],
+                    creator=idea.author or "",
+                    url=enriched["url"],
+                    thumbnail_url=enriched["thumbnail_url"],
+                    confidence=idea.confidence,
+                    instagram_url=url,
+                    raw_context=idea.context,
+                    ai_summary=extracted.summary,
+                    content_hash=content_hash,
+                    status="UNREAD",
+                    gemini_notes=f"Original Idea text: {idea.text}",
+                    tags=" ".join(idea.tags)
+                )
+                rows_to_save.append(row)
+                saved_items_summary.append({"title": enriched["title"], "type": "IDEA"})
+                
             # Steps 5 & 6: Write to Google Sheets
             if not rows_to_save:
-                if not extracted.youtube_videos and not extracted.books and not extracted.other_links:
+                if not extracted.youtube_videos and not extracted.books and not extracted.other_links and not extracted.anime and not extracted.manga and not extracted.movies_tv and not extracted.ideas:
                     # Nothing found
                     excerpt = caption[:300]
                     await bot.send_message(

@@ -232,3 +232,167 @@ async def enrich_book(
         "thumbnail_url": "",
         "publish_year": "",
     }
+
+async def enrich_anime(title: str, search_query: str) -> Dict[str, Any]:
+    encoded_query = urllib.parse.quote(search_query)
+    fallback_url = f"https://aniwaves.ru/filter?keyword={encoded_query}"
+    api_url = f"https://api.jikan.moe/v4/anime?q={encoded_query}&limit=1"
+
+    logger.info(f"Querying Jikan for Anime: {search_query}")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(api_url)
+
+        if response.status_code == 200:
+            data = response.json()
+            data_list = data.get("data", [])
+            if data_list:
+                item = data_list[0]
+                resolved_title = item.get("title", title)
+                url = fallback_url # Use free stream site instead of MAL
+                thumbnail_url = item.get("images", {}).get("jpg", {}).get("image_url", "")
+                
+                return {
+                    "title": resolved_title,
+                    "url": url,
+                    "thumbnail_url": thumbnail_url,
+                }
+    except Exception as e:
+        logger.error(f"Jikan lookup failed for anime '{search_query}': {e}")
+
+    return {
+        "title": title,
+        "url": fallback_url,
+        "thumbnail_url": "",
+    }
+
+async def enrich_manga(title: str, search_query: str) -> Dict[str, Any]:
+    encoded_query = urllib.parse.quote(search_query)
+    fallback_url = f"https://asurascans.com/?s={encoded_query}"
+    api_url = f"https://api.jikan.moe/v4/manga?q={encoded_query}&limit=1"
+
+    logger.info(f"Querying Jikan for Manga: {search_query}")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(api_url)
+
+        if response.status_code == 200:
+            data = response.json()
+            data_list = data.get("data", [])
+            if data_list:
+                item = data_list[0]
+                resolved_title = item.get("title", title)
+                url = fallback_url # Use AsuraScans link instead of MAL
+                thumbnail_url = item.get("images", {}).get("jpg", {}).get("image_url", "")
+                
+                return {
+                    "title": resolved_title,
+                    "url": url,
+                    "thumbnail_url": thumbnail_url,
+                }
+    except Exception as e:
+        logger.error(f"Jikan lookup failed for manga '{search_query}': {e}")
+
+    return {
+        "title": title,
+        "url": fallback_url,
+        "thumbnail_url": "",
+    }
+
+async def get_tmdb_id_from_imdb(imdb_id: str, is_tv: bool = False) -> Optional[str]:
+    """Uses Wikidata to map an IMDb ID to a TMDB ID completely keyless."""
+    headers = {"User-Agent": "InstaShelfBot/1.0 (hello@instashelf.local)"}
+    search_url = f"https://www.wikidata.org/w/api.php?action=query&list=search&srsearch=haswbstatement:P345={imdb_id}&format=json"
+    
+    try:
+        async with httpx.AsyncClient(headers=headers, timeout=15.0) as client:
+            for attempt in range(3):
+                search_res = await client.get(search_url)
+                if search_res.status_code == 200:
+                    break
+                elif search_res.status_code == 429:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                else:
+                    return None
+            
+            if search_res.status_code != 200:
+                return None
+
+            search_data = search_res.json()
+            results = search_data.get("query", {}).get("search", [])
+            if not results: return None
+            
+            qid = results[0]["title"]
+            prop = "P4983" if is_tv else "P4947"
+            claims_url = f"https://www.wikidata.org/w/api.php?action=wbgetclaims&entity={qid}&property={prop}&format=json"
+            
+            claims_res = await client.get(claims_url)
+            if claims_res.status_code == 200:
+                claims_data = claims_res.json()
+                claims = claims_data.get("claims", {}).get(prop, [])
+                if claims:
+                    return claims[0].get("mainsnak", {}).get("datavalue", {}).get("value")
+    except Exception as e:
+        logger.error(f"Wikidata TMDB resolution failed for {imdb_id}: {e}")
+        
+    return None
+
+async def enrich_movie_tv(title: str, type_str: str, search_query: str) -> Dict[str, Any]:
+    encoded_query = urllib.parse.quote(search_query)
+    
+    clean_query = re.sub(r'[^a-zA-Z0-9]', '_', search_query.lower())
+    first_letter = clean_query[0] if clean_query else 'a'
+    api_url = f"https://v3.sg.media-imdb.com/suggestion/{first_letter}/{clean_query}.json"
+
+    logger.info(f"Querying free IMDb Autocomplete for {type_str}: {search_query}")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(api_url)
+
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get("d", [])
+            if results:
+                item = results[0]
+                resolved_title = item.get("l") or title
+                thumbnail_url = item.get("i", {}).get("imageUrl", "")
+                imdb_id = item.get("id", "")
+                
+                media_type = "tv" if type_str == "TV_SHOW" else "movie"
+                encoded_title = urllib.parse.quote_plus(resolved_title)
+                
+                direct_url = f"https://cinema.bz/?s={encoded_query}"
+                if imdb_id:
+                    is_tv = (type_str == "TV_SHOW")
+                    tmdb_id = await get_tmdb_id_from_imdb(imdb_id, is_tv=is_tv)
+                    if tmdb_id:
+                        direct_url = f"https://cinema.bz/watch?id={tmdb_id}&type={media_type}&title={encoded_title}"
+                
+                return {
+                    "title": resolved_title,
+                    "url": direct_url,
+                    "thumbnail_url": thumbnail_url,
+                }
+    except Exception as e:
+        logger.error(f"IMDb lookup failed for {type_str} '{search_query}': {e}")
+
+    return {
+        "title": title,
+        "url": f"https://cinema.bz/?s={encoded_query}",
+        "thumbnail_url": "",
+    }
+
+async def enrich_idea(text: str, author: Optional[str]) -> Dict[str, Any]:
+    # Ideas/Quotes don't have URLs or thumbnails, we just format the title nicely.
+    title = f'"{text}"'
+    if author:
+        title += f" - {author}"
+        
+    return {
+        "title": title,
+        "url": "",
+        "thumbnail_url": "",
+    }

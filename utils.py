@@ -1,8 +1,9 @@
 import os
 import logging
 import asyncio
-import sqlite3
 import json
+import psycopg2
+import psycopg2.extras
 
 # Force native gRPC DNS resolution to fix macOS DNS lookup failures
 os.environ["GRPC_DNS_RESOLVER"] = "native"
@@ -32,14 +33,15 @@ logging.basicConfig(
 logger = logging.getLogger("InstaShelf")
 
 # DB Configuration path
-DB_DIR = os.getenv("DB_DIR", "/app/data" if os.path.exists("/app/data") else "./data")
-os.makedirs(DB_DIR, exist_ok=True)
-DB_PATH = os.path.join(DB_DIR, "instashelf.db")
+SUPABASE_DATABASE_URL = os.getenv("SUPABASE_DATABASE_URL")
+
+def get_db_connection():
+    return psycopg2.connect(SUPABASE_DATABASE_URL)
 
 def init_db():
-    """Initializes the local SQLite database for quota tracking and offline fallback cache."""
+    """Initializes the Supabase PostgreSQL database for quota tracking and offline fallback cache."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # Table for tracking Gemini daily requests quota
@@ -61,7 +63,7 @@ def init_db():
         # Table for storing offline google sheets cache rows when writes fail
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS pending_rows (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 row_data TEXT NOT NULL,
                 created_at TEXT NOT NULL
             )
@@ -72,7 +74,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS user_progress (
                 content_hash TEXT PRIMARY KEY,
                 progress_seconds INTEGER NOT NULL DEFAULT 0,
-                is_completed BOOLEAN NOT NULL DEFAULT 0,
+                is_completed BOOLEAN NOT NULL DEFAULT FALSE,
                 last_updated TEXT NOT NULL
             )
         """)
@@ -80,7 +82,7 @@ def init_db():
         # Table for storing user video timestamp notes
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS video_notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 content_hash TEXT NOT NULL,
                 timestamp_seconds INTEGER NOT NULL,
                 note_text TEXT NOT NULL,
@@ -90,12 +92,13 @@ def init_db():
         
         conn.commit()
         conn.close()
-        logger.info(f"Local SQLite database initialized at {DB_PATH}")
+        logger.info("Supabase PostgreSQL database initialized")
     except Exception as e:
-        logger.error(f"Failed to initialize SQLite database: {e}")
+        logger.error(f"Failed to initialize PostgreSQL database: {e}")
 
 # Call init_db on import
-init_db()
+if SUPABASE_DATABASE_URL:
+    init_db()
 
 def get_current_date() -> str:
     """Returns today's date formatted as YYYY-MM-DD."""
@@ -107,9 +110,9 @@ def get_gemini_usage(date_str: str = None) -> int:
     if date_str is None:
         date_str = get_current_date()
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT count FROM gemini_quota WHERE date = ?", (date_str,))
+        cursor.execute("SELECT count FROM gemini_quota WHERE date = %s", (date_str,))
         row = cursor.fetchone()
         conn.close()
         return row[0] if row else 0
@@ -122,19 +125,17 @@ def increment_gemini_usage(date_str: str = None) -> int:
     if date_str is None:
         date_str = get_current_date()
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         # Insert or update
         cursor.execute("""
             INSERT INTO gemini_quota (date, count) 
-            VALUES (?, 1)
-            ON CONFLICT(date) DO UPDATE SET count = count + 1
+            VALUES (%s, 1)
+            ON CONFLICT(date) DO UPDATE SET count = gemini_quota.count + 1
+            RETURNING count
         """, (date_str,))
-        conn.commit()
-        
-        # Retrieve updated count
-        cursor.execute("SELECT count FROM gemini_quota WHERE date = ?", (date_str,))
         row = cursor.fetchone()
+        conn.commit()
         conn.close()
         new_count = row[0] if row else 1
         logger.info(f"Gemini daily quota usage: {new_count}/20 for {date_str}")
@@ -149,9 +150,9 @@ def get_groq_usage(date_str: str = None) -> int:
     if date_str is None:
         date_str = get_current_date()
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT count FROM groq_quota WHERE date = ?", (date_str,))
+        cursor.execute("SELECT count FROM groq_quota WHERE date = %s", (date_str,))
         row = cursor.fetchone()
         conn.close()
         return row[0] if row else 0
@@ -164,19 +165,17 @@ def increment_groq_usage(date_str: str = None) -> int:
     if date_str is None:
         date_str = get_current_date()
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         # Insert or update
         cursor.execute("""
             INSERT INTO groq_quota (date, count) 
-            VALUES (?, 1)
-            ON CONFLICT(date) DO UPDATE SET count = count + 1
+            VALUES (%s, 1)
+            ON CONFLICT(date) DO UPDATE SET count = groq_quota.count + 1
+            RETURNING count
         """, (date_str,))
-        conn.commit()
-        
-        # Retrieve updated count
-        cursor.execute("SELECT count FROM groq_quota WHERE date = ?", (date_str,))
         row = cursor.fetchone()
+        conn.commit()
         conn.close()
         new_count = row[0] if row else 1
         logger.info(f"Groq daily quota usage: {new_count}/1000 for {date_str}")
@@ -187,28 +186,28 @@ def increment_groq_usage(date_str: str = None) -> int:
 
 # Sheets Caching Functions
 def cache_pending_row(row_dict: dict) -> bool:
-    """Saves a row to the offline SQLite queue to retry writing to Google Sheets later."""
+    """Saves a row to the offline Postgres queue to retry writing to Google Sheets later."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         data_str = json.dumps(row_dict)
         now_str = datetime.utcnow().isoformat()
         cursor.execute(
-            "INSERT INTO pending_rows (row_data, created_at) VALUES (?, ?)",
+            "INSERT INTO pending_rows (row_data, created_at) VALUES (%s, %s)",
             (data_str, now_str)
         )
         conn.commit()
         conn.close()
-        logger.warning("Google Sheet write failed. Saved row to local SQLite cache.")
+        logger.warning("Google Sheet write failed. Saved row to local Postgres cache.")
         return True
     except Exception as e:
-        logger.critical(f"Failed to cache pending row to SQLite: {e}")
+        logger.critical(f"Failed to cache pending row to Postgres: {e}")
         return False
 
 def get_pending_rows() -> List[Tuple[int, dict]]:
-    """Retrieves all pending rows from the offline SQLite queue."""
+    """Retrieves all pending rows from the offline Postgres queue."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, row_data FROM pending_rows ORDER BY id ASC")
         rows = cursor.fetchall()
@@ -222,20 +221,20 @@ def get_pending_rows() -> List[Tuple[int, dict]]:
                 logger.error(f"Failed to parse offline row {row_id}: {pe}")
         return parsed_rows
     except Exception as e:
-        logger.error(f"Failed to get pending rows from SQLite: {e}")
+        logger.error(f"Failed to get pending rows from Postgres: {e}")
         return []
 
 def delete_pending_row(row_id: int) -> bool:
-    """Deletes a successfully synced row from the offline SQLite queue."""
+    """Deletes a successfully synced row from the offline Postgres queue."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM pending_rows WHERE id = ?", (row_id,))
+        cursor.execute("DELETE FROM pending_rows WHERE id = %s", (row_id,))
         conn.commit()
         conn.close()
         return True
     except Exception as e:
-        logger.error(f"Failed to delete pending row {row_id} from SQLite: {e}")
+        logger.error(f"Failed to delete pending row {row_id} from Postgres: {e}")
         return False
 
 # Async Retry Decorator

@@ -1,18 +1,17 @@
-import sqlite3
 import logging
 from datetime import datetime
 from typing import Dict, Any, List
+import psycopg2.extras
 
-from utils import DB_PATH
+from utils import get_db_connection
 
 logger = logging.getLogger("InstaShelf.progress")
 
 def get_all_progress() -> Dict[str, Dict[str, Any]]:
-    """Retrieves all user progress from the local SQLite database."""
+    """Retrieves all user progress from the PostgreSQL database."""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute("SELECT content_hash, progress_seconds, is_completed, last_updated FROM user_progress")
         rows = cursor.fetchall()
         conn.close()
@@ -26,27 +25,24 @@ def get_all_progress() -> Dict[str, Dict[str, Any]]:
             }
         return progress_dict
     except Exception as e:
-        logger.error(f"Failed to get user progress from SQLite: {e}")
+        logger.error(f"Failed to get user progress from Postgres: {e}")
         return {}
 
 def update_progress(content_hash: str, progress_seconds: int, is_completed: bool) -> bool:
-    """Updates the progress for a specific item in the SQLite database."""
+    """Updates the progress for a specific item in the PostgreSQL database."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         now_str = datetime.utcnow().isoformat() + "Z"
         
-        # SQLite doesn't have true booleans, so we use integers 0 and 1
-        is_completed_int = 1 if is_completed else 0
-        
         cursor.execute("""
             INSERT INTO user_progress (content_hash, progress_seconds, is_completed, last_updated)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT(content_hash) DO UPDATE SET
-                progress_seconds = excluded.progress_seconds,
-                is_completed = excluded.is_completed,
-                last_updated = excluded.last_updated
-        """, (content_hash, progress_seconds, is_completed_int, now_str))
+                progress_seconds = EXCLUDED.progress_seconds,
+                is_completed = EXCLUDED.is_completed,
+                last_updated = EXCLUDED.last_updated
+        """, (content_hash, progress_seconds, is_completed, now_str))
         
         conn.commit()
         conn.close()
@@ -58,11 +54,10 @@ def update_progress(content_hash: str, progress_seconds: int, is_completed: bool
 def get_notes(content_hash: str) -> List[Dict[str, Any]]:
     """Retrieves all notes for a specific content item ordered by timestamp."""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute(
-            "SELECT id, timestamp_seconds, note_text, created_at FROM video_notes WHERE content_hash = ? ORDER BY timestamp_seconds ASC",
+            "SELECT id, timestamp_seconds, note_text, created_at FROM video_notes WHERE content_hash = %s ORDER BY timestamp_seconds ASC",
             (content_hash,)
         )
         rows = cursor.fetchall()
@@ -84,16 +79,17 @@ def get_notes(content_hash: str) -> List[Dict[str, Any]]:
 def add_note(content_hash: str, timestamp_seconds: int, note_text: str) -> Dict[str, Any]:
     """Adds a new note for a specific content item at a timestamp."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         now_str = datetime.utcnow().isoformat() + "Z"
         
         cursor.execute("""
             INSERT INTO video_notes (content_hash, timestamp_seconds, note_text, created_at)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
         """, (content_hash, timestamp_seconds, note_text, now_str))
         
-        note_id = cursor.lastrowid
+        note_id = cursor.fetchone()[0]
         conn.commit()
         conn.close()
         
