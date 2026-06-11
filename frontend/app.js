@@ -162,9 +162,14 @@ function openItemModal(item) {
     openOriginalBtn.href = itemUrl;
     
     // Automatically copy the title to clipboard for Manga/Manhwa if they need to manually search AsuraScans
+    openOriginalBtn.innerHTML = '<i class="fas fa-external-link-alt"></i> Open Original';
     openOriginalBtn.onclick = () => {
         if (item.content_type === 'MANGA') {
             navigator.clipboard.writeText(item.title).catch(err => console.error('Clipboard copy failed:', err));
+            openOriginalBtn.innerHTML = '<i class="fas fa-check"></i> Title Copied!';
+            setTimeout(() => {
+                openOriginalBtn.innerHTML = '<i class="fas fa-external-link-alt"></i> Open Original';
+            }, 3000);
         }
     };
     
@@ -174,11 +179,18 @@ function openItemModal(item) {
     const moviePlayer = document.getElementById('moviePlayer');
     const ytId = item.content_type === 'YOUTUBE' ? extractYouTubeId(item.url) : null;
     const adblockWarning = document.getElementById('adblockWarning');
+    const mangaInstruction = document.getElementById('mangaCopyInstruction');
 
     if (item.content_type === 'MOVIE_TV' || item.content_type === 'ANIME' || item.content_type === 'MANGA') {
         if (adblockWarning) adblockWarning.classList.remove('hidden');
     } else {
         if (adblockWarning) adblockWarning.classList.add('hidden');
+    }
+    
+    if (item.content_type === 'MANGA') {
+        if (mangaInstruction) mangaInstruction.classList.remove('hidden');
+    } else {
+        if (mangaInstruction) mangaInstruction.classList.add('hidden');
     }
 
     // Reset displays
